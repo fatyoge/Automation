@@ -9,6 +9,8 @@ import json
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s: %(message)s')
 from flask_restful import marshal, fields
 from sqlalchemy.sql import sqltypes
+import re
+from utils import SQLFormator
 
 class Connector():
     #url = 'driver://username:password@host:port/database'
@@ -23,21 +25,10 @@ class Connector():
             sqltypes.Date : fields.String,
             sqltypes.BigInteger : fields.Integer,
             sqltypes.Float : fields.Float,
-            sqltypes.Boolean : fields.Boolean
+            sqltypes.Boolean : fields.Boolean,
+            sqltypes.NullType: fields.String,
         }
-        self.string_type = [
-            sqltypes.String,
-            sqltypes.DateTime,
-            sqltypes.Date,
-        ]
-        self.operator_map = {
-            'eq':'=',
-            'ne':'!=',
-            'gt':'>',
-            'gte':'>=',
-            'lt':'<',
-            'lte':'<=',
-        }
+        
 
     def set_addr(self, url):
         for k in url:
@@ -120,7 +111,7 @@ class PrestoConnector(Connector):
             self.table_obj[table_name] = table_orm
         return table_orm
 
-    def query_table(self, table, fields=None, whereclause=None, order_by=None, limit=None, **kwargs):
+    def query_table(self, table, fields=None, whereclause=None, order_by=None, offset=None, group_by=None, limit=None, **kwargs):
         print('start to query_table： {}'.format(table))
         query_args = OrderedDict()
         # Get table ORM object
@@ -130,37 +121,52 @@ class PrestoConnector(Connector):
 
         resource_type = OrderedDict()
         
-        if fields is None:
-            fields = table.alias().columns.keys()
-        else:
-            fields = fields.split(',')
+        #if fields is None:
+        #    if group_by is None:
+        #        fields = table.alias().columns.keys()
+        #    else:
+        #        fields = group_by.split(',')
+        #        fields.append(func.count('*'))
+        #else:
+        #    fields = fields.split(',')
+#
+        #cols = []
+        #for f in fields:
+        #    regs = re.findall(r'[^()]+',f)
+        #    if len(regs) == 1:
+        #        cols.append(f)
+        #    elif len(regs) == 2 and regs[0] in self.func_map:
+        #        col = regs[1]
+        #        if col in table.columns:
+        #            col = table.columns[col]
+        #        cols.append(self.func_map[regs[0]](col))
+        query_args['columns'] = SQLFormator.selectTransform(fields, table)
 
-        query_args['columns'] = fields
+        if group_by is not None:
+            query_args['group_by'] = group_by.split(',')
 
         if order_by is not None:
             query_args['order_by'] = [desc(x[1:]) if x[0]=='-' else asc(x) for x in order_by.split(',')]
-        
-        for c in table.alias().columns:
-            if c.name in fields:
-                resource_type[c.name] = self.type_map[type(c.type)]
-        
+                
         if whereclause is not None:
-            cond = whereclause[1:-1].split(',')
-            col = cond[0]
-            oper = self.operator_map[cond[1]]
-            value = cond[2]
-            if col in table.alias().columns and type(table.alias().columns[col].type) in self.string_type:
-                value = "'{}'".format(value)
-            query_args['whereclause'] = "{} {} {}".format(cond[0], oper, value)
+            query_args['whereclause'] = SQLFormator.whereTransform(whereclause, table)
         
         if limit is not None:
             query_args['limit'] = limit
         else:
             query_args['limit'] = 1
         #print('=======================query_args=========================')
-        #print(query_args)
+        print(query_args)
         #return select(**query_args).scalar()
-        
+        query = select(**query_args)
+        for c in query.columns:
+            print(c)
+            if str(c) in table.alias().columns.keys():
+                resource_type[str(c)] = self.type_map[type(table.alias().columns[str(c)].type)]
+            elif type(c.type) in self.type_map:
+                resource_type[str(c)] = self.type_map[type(c.type)]
+            #else:
+            #    resource_type[str(c)] = self.type_map[sqltypes.Float]
         return json.dumps(marshal(select(**query_args).execute().fetchall(), resource_type))
 
 def singleton(cls):
